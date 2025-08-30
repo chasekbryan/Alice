@@ -186,7 +186,7 @@ class Memory:
             return False
 
     def add_message(self, role: str, content: str) -> int:
-        ts = dt.datetime.utcnow().isoformat()
+        ts = dt.datetime.now(dt.timezone.utc).isoformat()
         cur = self.conn.execute("INSERT INTO messages(role, content, ts) VALUES (?,?,?)", (role, content, ts))
         self.conn.commit()
         return cur.lastrowid
@@ -222,7 +222,7 @@ class Memory:
         return [(mid, c) for score, mid, c in scored[:k]]
 
     def upsert_fact(self, key: str, value: str, weight_delta: float = 1.0):
-        ts = dt.datetime.utcnow().isoformat()
+        ts = dt.datetime.now(dt.timezone.utc).isoformat()
         self.conn.execute(
             "INSERT INTO facts(key, value, weight, ts) VALUES(?,?,?,?)\n"
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, weight=facts.weight+?, ts=excluded.ts",
@@ -237,12 +237,12 @@ class Memory:
         return out
 
     def add_reflection(self, text: str, score: float = 0.0):
-        ts = dt.datetime.utcnow().isoformat()
+        ts = dt.datetime.now(dt.timezone.utc).isoformat()
         self.conn.execute("INSERT INTO reflections(text, score, ts) VALUES (?,?,?)", (text, score, ts))
         self.conn.commit()
 
     def add_skill(self, name: str, code: str, approved: bool = False):
-        ts = dt.datetime.utcnow().isoformat()
+        ts = dt.datetime.now(dt.timezone.utc).isoformat()
         self.conn.execute(
             "INSERT OR REPLACE INTO skills(name, code, approved, usage_count, created_ts) VALUES (?,?,?,?,?)",
             (name, code, 1 if approved else 0, 0, ts),
@@ -260,7 +260,7 @@ class Memory:
         self.conn.commit()
 
     def add_reward(self, message_id: Optional[int], delta: float, reason: str = ""):
-        ts = dt.datetime.utcnow().isoformat()
+        ts = dt.datetime.now(dt.timezone.utc).isoformat()
         self.conn.execute("INSERT INTO rewards(message_id, delta, reason, ts) VALUES (?,?,?,?)", (message_id, delta, reason, ts))
         self.conn.commit()
 
@@ -398,10 +398,10 @@ class Alice:
 
         # detect a single tool call request
         m = re.search(
-                r"<<call:(?P<name>[A-Za-z0-9_\-]+)\s+args='(?P<args>.*)'>>\s*$",
-                out,
-                re.DOTALL,
+            r"<<call:(?P<name>[A-Za-z0-9_\-]+)\s+args='(?P<args>.*)'>>\s*$",
+            out, re.DOTALL
         )
+
         if m:
             name = m.group("name")
             try:
@@ -438,16 +438,16 @@ class Alice:
             - /facts                — list top remembered facts
             - /recall <query>       — search past chat/content
             - /good | /bad          — give feedback on the last answer
-            - /teach <name> ```python\n...```  — teach a skill; must define skill_main(**kwargs)
+            - /teach <name> ```python\\n...```  — teach a skill; must define skill_main(**kwargs)
             - /run <name> {json}    — run an approved skill with args
             - /ingest <path>        — ingest .txt/.md files into memory search
 
             Example skill
             /teach summarize ```python
             def skill_main(text: str, max_lines: int = 6):
-                return "\n".join(line.strip() for line in text.splitlines()[:max_lines])
+                return "\\n".join(line.strip() for line in text.splitlines()[:max_lines])
             ```
-            Then: /run summarize {"text": "hello\nworld", "max_lines": 1}
+            Then: /run summarize {"text": "hello\\nworld", "max_lines": 1}
             """
         ).strip()
 
