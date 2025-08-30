@@ -1,0 +1,233 @@
+*** a/alice_darkmode.py
+--- b/alice_darkmode.py
+@@
+ from typing import Any, Dict, Iterable, List, Optional, Tuple
++# Note: This patch adds Termux/Android resiliency: longer HTTP timeouts,
++# streaming generate, server readiness checks, and optional warmup.
+ 
+@@
+ @dataclasses.dataclass
+ class Config:
+     db_path: str = "alice.db"
+     model: str = "llama3.2:3b"           # Ollama generation model
+     ollama_host: str = "127.0.0.1"
+     ollama_port: int = 11434
+     temperature: float = 0.4
+     top_p: float = 0.95
+     top_k: int = 40
+     num_ctx: int = 4096                    # if your model supports more, raise it
+     reflect_every_sec: int = 600           # background reflection cadence
+     recall_k: int = 12
+     max_history: int = 14                  # dialogue turns included
+     allow_dangerous_skills: bool = False
+     # Embeddings
+     embed_enable: bool = True
+     embed_model: str = "nomic-embed-text"  # available in Ollama; change if needed
+     index_new_messages: bool = True
+     # Training
+     train_mode: bool = False               # build dataset + attempt LoRA if libs available
+     train_interval_sec: int = 3600         # attempt once per hour when idle
+     train_dir: str = "train"
++    # Android/Termux tweaks
++    http_timeout: float = 180.0            # overridden to large value on Termux
++    stream: bool = False                   # default off; auto-on for Termux
++    wait_ollama_secs: int = 20             # grace period to detect API up
++    startup_warmup: bool = False           # short first call to load model; auto-on for Termux
+ 
+ # ----------------------- OLLAMA CLIENTS -----------------------
+ class LLMClient:
+     """Pluggable minimal client for Ollama /api/generate and /api/embeddings."""
+     def __init__(self, cfg: Config):
+         self.cfg = cfg
++        self._did_warmup = False
+ 
+     def _http(self) -> http.client.HTTPConnection:
+-        return http.client.HTTPConnection(self.cfg.ollama_host, self.cfg.ollama_port, timeout=180)
++        return http.client.HTTPConnection(
++            self.cfg.ollama_host,
++            self.cfg.ollama_port,
++            timeout=self.cfg.http_timeout,
++        )
+ 
+-    def complete(self, prompt: str, system: Optional[str] = None, max_tokens: int = 512) -> str:
++    def _ensure_ready(self) -> None:
++        """Wait briefly for Ollama API to be reachable (useful on Termux)."""
++        try:
++            conn = self._http()
++            deadline = time.time() + float(self.cfg.wait_ollama_secs)
++            while time.time() < deadline:
++                try:
++                    conn.request("GET", "/api/tags")
++                    resp = conn.getresponse()
++                    resp.read()
++                    if resp.status < 500:
++                        return
++                except Exception:
++                    pass
++                time.sleep(0.3)
++        finally:
++            with contextlib.suppress(Exception):
++                conn.close()
++
++    def complete(
++        self,
++        prompt: str,
++        system: Optional[str] = None,
++        max_tokens: int = 512,
++        stream: Optional[bool] = None,
++        stream_to: Optional[io.TextIOBase] = None,
++    ) -> str:
++        self._ensure_ready()
+         payload = {
+             "model": self.cfg.model,
+             "prompt": prompt,
+-            "stream": False,
++            "stream": (self.cfg.stream if stream is None else stream),
+             "options": {
+                 "temperature": self.cfg.temperature,
+                 "top_p": self.cfg.top_p,
+                 "top_k": self.cfg.top_k,
+                 "num_ctx": self.cfg.num_ctx,
+                 "num_predict": max_tokens,
+             },
+         }
+         if system:
+             payload["system"] = system
+-        try:
+-            conn = self._http()
+-            body = json.dumps(payload)
+-            conn.request("POST", "/api/generate", body=body, headers={"Content-Type": "application/json"})
+-            resp = conn.getresponse()
+-            data = resp.read()
+-            if resp.status >= 400:
+-                raise RuntimeError(f"LLM HTTP {resp.status}: {data[:200]!r}")
+-            obj = json.loads(data)
+-            return obj.get("response", "")
++        try:
++            conn = self._http()
++            body = json.dumps(payload)
++            conn.request("POST", "/api/generate", body=body, headers={"Content-Type": "application/json"})
++            resp = conn.getresponse()
++            if resp.status >= 400:
++                data = resp.read()
++                raise RuntimeError(f"LLM HTTP {resp.status}: {data[:200]!r}")
++            # streaming branch — prevents read timeouts on slow Android CPUs
++            if payload["stream"]:
++                buf = []
++                while True:
++                    line = resp.readline()
++                    if not line:
++                        break
++                    try:
++                        obj = json.loads(line.decode("utf-8"))
++                    except Exception:
++                        continue
++                    piece = obj.get("response", "")
++                    if piece:
++                        buf.append(piece)
++                        if stream_to is not None:
++                            with contextlib.suppress(Exception):
++                                stream_to.write(piece)
++                                stream_to.flush()
++                    if obj.get("done"):
++                        break
++                return "".join(buf)
++            # non-streaming fallback
++            data = resp.read()
++            obj = json.loads(data)
++            return obj.get("response", "")
+         except Exception as e:
+             return f"[LLM error: {e}]"
+         finally:
+             with contextlib.suppress(Exception):
+                 conn.close()
+ 
+@@
+     def shutdown(self):
+         # stop indexer
+         with contextlib.suppress(Exception):
+             self.index_q.put((None, ""))  # sentinel
+         with contextlib.suppress(Exception):
+             self.indexer.join(timeout=2)
+         with contextlib.suppress(Exception):
+             self.conn.close()
+@@
+ def main(argv: Optional[List[str]] = None) -> int:
+     ap = argparse.ArgumentParser(description="Alice Darkmode — a continuously-learning agent")
+     ap.add_argument("--db", default="alice.db", help="SQLite database path")
+     ap.add_argument("--model", default="llama3.2:3b", help="Ollama model tag (e.g., llama3.2:3b, gemma:2b, llama3:70b)")
+     ap.add_argument("--ollama-host", default="127.0.0.1")
+     ap.add_argument("--ollama-port", default=11434, type=int)
+     ap.add_argument("--temperature", default=0.4, type=float)
+     ap.add_argument("--top-p", default=0.95, type=float)
+     ap.add_argument("--top-k", default=40, type=int)
+     ap.add_argument("--num-ctx", default=4096, type=int, help="Context window tokens if supported by model")
+     ap.add_argument("--reflect", default=600, type=int, help="Seconds between background reflections")
+     ap.add_argument("--allow-dangerous-skills", action="store_true", help="Allow skills to access os/sys/etc.")
+     ap.add_argument("--no-embed", action="store_true", help="Disable embedding/semantic memory")
+     ap.add_argument("--embed-model", default="nomic-embed-text", help="Ollama embedding model tag")
+     ap.add_argument("--train-mode", action="store_true", help="Enable background dataset building + optional LoRA (if deps present)")
+     ap.add_argument("--train-interval", default=3600, type=int, help="Seconds between background train attempts")
++    # New knobs useful on Android/Termux
++    ap.add_argument("--http-timeout", type=float, default=None, help="HTTP timeout seconds (default: 180; auto-raised on Termux)")
++    ap.add_argument("--no-stream", action="store_true", help="Force non-streaming requests to Ollama")
++    ap.add_argument("--no-warmup", action="store_true", help="Disable the tiny startup warm-up generate")
+ 
+     args = ap.parse_args(argv)
++    # Detect Termux/Android and choose safer defaults for slow first runs.
++    def _is_termux() -> bool:
++        if "TERMUX_VERSION" in os.environ:
++            return True
++        prefix = os.environ.get("PREFIX", "")
++        return "com.termux" in prefix or os.path.exists("/data/data/com.termux/files/usr")
++
++    termux = _is_termux()
++    http_timeout = (args.http_timeout if args.http_timeout is not None
++                    else (7200.0 if termux else 180.0))
++    stream = (not args.no_stream) if termux else (not args.no_stream and False)
++    startup_warmup = (not args.no_warmup) and termux
+ 
+     cfg = Config(
+         db_path=args.db,
+         model=args.model,
+         ollama_host=args.ollama_host,
+         ollama_port=args.ollama_port,
+         temperature=args.temperature,
+         top_p=args.top_p,
+         top_k=args.top_k,
+         num_ctx=args.num_ctx,
+         reflect_every_sec=args.reflect,
+         allow_dangerous_skills=args.allow_dangerous_skills,
+-        embed_enable=(not args.no_embed),
++        embed_enable=(not args.no_embed),
+         embed_model=args.embed_model,
+         train_mode=args.train_mode,
+         train_interval_sec=args.train_interval,
++        http_timeout=http_timeout,
++        stream=stream,
++        wait_ollama_secs=(60 if termux else 20),
++        startup_warmup=startup_warmup,
+     )
+ 
+     alice = Alice(cfg)
+ 
++    # Optional warm-up to avoid first-call timeouts while model loads on Android.
++    if cfg.startup_warmup:
++        try:
++            _ = alice.llm.complete("ping", system="Reply with 'pong' then stop.", max_tokens=2)
++        except Exception:
++            pass
++
+     def handle_sigint(_sig, _frm):
+         print("\n[shutting down]")
+         alice.shutdown()
+         sys.exit(0)
+ 
+@@
+-    print("Alice Darkmode is awake. Type /help for commands. Ctrl+C to exit.\n")
++    print("Alice Darkmode is awake. Type /help for commands. Ctrl+C to exit.\n")
+     while True:
+         try:
+             user = input("You> ").strip()
+         except EOFError:
+             break
