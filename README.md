@@ -177,6 +177,16 @@ Run `python3 alice.py --help` for the full list. Key options:
 
 ---
 
+```
+python3 alice_darkmode.py \
+  --model llama3.2:3b \
+  --embed-model nomic-embed-text \
+  --train-mode \
+  --reflect 600
+```
+
+---
+
 ## License
 - **GNU General Public License v3.0 (GPL‑3.0)**
 - You should have received a copy of the GNU General Public License along with this program. If not, see the official GNU GPL‑3.0 text.
