@@ -7,8 +7,7 @@ Alice is AI software designed for open-source development
 
 
 **
-*Capable of continuously-learning; local, and interactable AI *
-*_____________________________________________________________*
+*Capable of continuously-learning; local, and interactable AI 
 **
 
 - First
