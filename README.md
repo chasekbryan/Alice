@@ -177,6 +177,8 @@ Run `python3 alice.py --help` for the full list. Key options:
 
 ---
 
+## Alice Darkmode
+
 ```
 python3 alice_darkmode.py \
   --model llama3.2:3b \
