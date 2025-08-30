@@ -178,6 +178,8 @@ Run `python3 alice.py --help` for the full list. Key options:
 ---
 
 ## Alice Darkmode
+- **Alice is capable of operating tools autonomously in Darkmode >:)**
+![GzoWQcBWYAAdPkK](https://github.com/user-attachments/assets/1035a20c-b26a-4bd4-8e67-7b1d3cabc206)
 
 ```
 python3 alice_darkmode.py \
