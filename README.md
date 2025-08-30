@@ -186,6 +186,14 @@ python3 alice_darkmode.py \
   --train-mode \
   --reflect 600
 ```
+- **Train Alice Darkmode**
+```
+python3 alice_darkmode.py --model llama3.2:3b --train-mode
+```
+- **Pull the embedding model (recommended)
+```
+ollama pull nomic-embed-text
+```
 
 ---
 
