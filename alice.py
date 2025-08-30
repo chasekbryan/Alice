@@ -23,7 +23,7 @@ Notes
   of the base LLM. This is the safest/most practical approach for long‑running assistants.
 - If you install optional packages (e.g., 'river') Alice will use them for online classifiers you create.
 
-License: GPL3
+License: GPL-3.0-or-later
 """
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ SYSTEM_PROMPT = (
   "Behavior:\n"
   "- You remember important facts about the user and this project.\n"
   "- When you wish to run a tool, emit a single line in the form:\n"
-  "  <<call:SKILL_NAME args='{""param"": ""value""}>>\n"
+  "  <<call:SKILL_NAME args='{\"param\": \"value\"}>>\n"
   "  After the tool result is provided by the host, continue the conversation.\n"
   "Safety:\n"
   "- Never execute system commands yourself. Only propose high‑level actions.\n"
@@ -173,6 +173,14 @@ class Memory:
         self._init_db()
         self.has_fts = self._check_fts()
 
+    def _fts_safe_query(self, text: str) -> str:
+        # keep alphanumerics/underscores, drop punctuation; require ≥2 chars to avoid noise
+        import re as _re
+        terms = _re.findall(r"[A-Za-z0-9_]{2,}", text)
+        return " OR ".join(terms) if terms else ""
+
+
+
     def _init_db(self):
         self.conn.executescript(DB_SCHEMA)
         self.conn.commit()
@@ -201,13 +209,24 @@ class Memory:
 
     def recall(self, query: str, k: int) -> List[Tuple[int, str]]:
         if self.has_fts:
-            cur = self.conn.execute(
-                "SELECT message_id, content FROM messages_fts WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?",
-                (query, k),
-            )
-            out = cur.fetchall()
-            cur.close()
-            return out
+            try:
+                q = self._fts_safe_query(query)
+                if q:
+                    cur = self.conn.execute(
+                        "SELECT message_id, content "
+                        "FROM messages_fts "
+                        "WHERE messages_fts MATCH ? "
+                        "ORDER BY bm25(messages_fts) "
+                        "LIMIT ?",
+                        (q, k),
+                    )
+                    out = cur.fetchall()
+                    cur.close()
+                    return out
+            except sqlite3.OperationalError:
+                # fall through to naive scan if FTS MATCH parsing fails
+                pass
+
         # fallback: naive scan
         cur = self.conn.execute("SELECT id, content FROM messages ORDER BY id DESC LIMIT 1000")
         rows = cur.fetchall()
@@ -220,6 +239,8 @@ class Memory:
                 scored.append((score, mid, c))
         scored.sort(reverse=True)
         return [(mid, c) for score, mid, c in scored[:k]]
+
+
 
     def upsert_fact(self, key: str, value: str, weight_delta: float = 1.0):
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
