@@ -7,7 +7,7 @@
 # - /web on|off             → toggle internet access (safe default off)
 # - Internet tool 'browse'  → fetch web content when enabled (requests + BeautifulSoup)
 # - /install <package>      → install external package with user approval (pip)
-# - Improved recall         → optional vector index for faster semantic search
+# - Improved recall         → optional vector index for faster semantic search (hook points)
 # - Darkvision improvements → skill proposal validation and context-aware prompts
 # - Minor memory and reflection enhancements for better long-term context
 # ---
@@ -34,6 +34,7 @@ import time
 import traceback
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# Optional deps for web browsing
 try:
     import requests  # for web fetching and external API calls
 except ImportError:
@@ -118,6 +119,7 @@ BASE_PROMPT = (
     "Memory:\n"
     "- you remember important facts and files the user ingests\n"
 )
+
 TOOLS_PROMPT = (
     "Tools:\n"
     "- Built-ins: calc(expr), recall(query), set_fact(key,value), get_facts()\n"
@@ -127,18 +129,20 @@ TOOLS_PROMPT = (
     "<<call:NAME args='{\"param\": \"value\"}'>>\n"
     "Host will reply with TOOL_RESULT; then continue.\n"
 )
+
 SAFETY_PROMPT = (
     "Safety:\n"
     "- never execute OS commands; use only provided tools\n"
     "- do not claim to have run code unless host confirms\n"
 )
+
 THOUGHT_RE = re.compile(r"^\s*(Thought|Chain|Internal):", re.IGNORECASE)
 
 # ----------------------- CONFIG -----------------------
 @dataclasses.dataclass
 class Config:
     db_path: str = "alice.db"
-    model: str = "gpt-oss:20b"          # default model tag (for Ollama or other backend)
+    model: str = "gpt-oss:20b"
     ollama_host: str = "127.0.0.1"
     ollama_port: int = 11434
     temperature: float = 0.4
@@ -161,7 +165,7 @@ class Config:
     # darkmode/autonomous tool use toggle
     autonomous_tools: bool = False
     # new features
-    web_access: bool = False            # Internet access disabled by default for safety
+    web_access: bool = False  # Internet access disabled by default for safety
 
 # ----------------------- OLLAMA CLIENT (LLM Interface) -----------------------
 class LLMClient:
@@ -189,7 +193,7 @@ class LLMClient:
         payload = {
             "model": self.cfg.model,
             "prompt": prompt,
-            "stream": False,  # could set True in future for streaming support
+            "stream": False,
             "options": {
                 "temperature": self.cfg.temperature,
                 "top_p": self.cfg.top_p,
@@ -201,7 +205,6 @@ class LLMClient:
         if system:
             payload["system"] = system
 
-        # simple retry loop
         delays = [0.0, 0.6, 1.2]
         last_err = None
         for d in delays:
@@ -238,10 +241,7 @@ class LLMClient:
         except Exception:
             return None
 
-    # Additional methods (unchanged list_models, show_model)...
-
     def list_models(self) -> List[str]:
-        """Return installed model tags (best-effort)."""
         try:
             conn = self._http(timeout=30)
             conn.request("GET", "/api/tags")
@@ -261,7 +261,6 @@ class LLMClient:
             return []
 
     def show_model(self, name: Optional[str] = None) -> Dict[str, Any]:
-        """Return /api/show details if available."""
         try:
             status, data = self._request("POST", "/api/show", {"name": name or self.cfg.model}, timeout=30)
             if status >= 400:
@@ -282,9 +281,7 @@ class Memory:
         self.index_q: "queue.Queue[Tuple[int,str]]" = queue.Queue()
         self.indexer = threading.Thread(target=self._index_loop, daemon=True)
         self.indexer.start()
-        # If advanced vector index is used, initialize it here (e.g., load extension)
-        # For example: self.conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_index USING vec(...)")
-        # (Details depend on the specific extension in use, if any)
+        # Hook point: initialize external vector index here if you add one.
 
     def _init_db(self):
         self.conn.executescript(DB_SCHEMA)
@@ -303,13 +300,11 @@ class Memory:
         self.conn.commit()
         mid = cur.lastrowid
         if index and self.cfg.embed_enable:
-            # Offload embedding to background thread
             with contextlib.suppress(Exception):
                 self.index_q.put((mid, content))
         return mid
 
     def get_recent_dialogue(self, n_pairs: int) -> List[Tuple[str, str]]:
-        # n_pairs refers to total messages (user+assistant) to fetch
         cur = self.conn.execute("SELECT role, content FROM messages ORDER BY id DESC LIMIT ?", (n_pairs,))
         rows = list(reversed(cur.fetchall()))
         cur.close()
@@ -317,80 +312,67 @@ class Memory:
 
     def recall(self, query: str, k: int) -> List[Tuple[int, str]]:
         got: Dict[int, Tuple[float, str]] = {}
-        # Semantic vector search
+        # Semantic
         if self.cfg.embed_enable:
-            # If advanced index is available, use it
-            # Example pseudo-code if using sqlite extension:
-            # cur = self.conn.execute("SELECT message_id, distance FROM vec_index WHERE vector MATCH ?", (query_vec,))
-            # Otherwise, fallback to brute-force
             rows = self.conn.execute("SELECT message_id, vec_json FROM embeddings").fetchall()
             if rows:
                 qvec = self.llm.embed(query) or []
                 if qvec:
-                    def cos_sim(a: List[float], b: List[float]) -> float:
+                    def cos(a: List[float], b: List[float]) -> float:
                         dot = na = nb = 0.0
                         for x, y in zip(a, b):
                             dot += x*y; na += x*x; nb += y*y
                         return dot / math.sqrt(na*nb) if na and nb else 0.0
                     for mid, vec_json in rows:
                         try:
-                            v = json.loads(vec_json); s = cos_sim(qvec, v)
+                            v = json.loads(vec_json); s = cos(qvec, v)
                         except Exception:
                             s = 0.0
                         if s > 0:
                             row = self.conn.execute("SELECT content FROM messages WHERE id=?", (mid,)).fetchone()
                             if row:
-                                # Combine scores if already have one (unlikely in brute-force scenario)
-                                prev_score = got[mid][0] if mid in got else 0.0
-                                got[int(mid)] = (max(s, prev_score), row[0])
-        # Full-text search
+                                got[int(mid)] = (max(s, got.get(int(mid), (0.0, ""))[0]), row[0])
+        # FTS
         if self.has_fts:
             try:
-                # Simple query formulation: match any token (OR logic) for broad recall
                 tokens = re.findall(r"[A-Za-z0-9_]{2,}", query)
                 if tokens:
-                    fts_query = " OR ".join(tokens)
+                    fts_q = " OR ".join(tokens)
                     for mid, content in self.conn.execute(
                         "SELECT message_id, content FROM messages_fts WHERE messages_fts MATCH ? ORDER BY bm25(messages_fts) LIMIT ?",
-                        (fts_query, k)
+                        (fts_q, k),
                     ):
-                        # Use a small positive base score for FTS hits if not already in got
                         got.setdefault(int(mid), (0.001, content))
             except sqlite3.OperationalError:
                 pass
-        # Fallback naive search (last N messages)
+        # Naive fallback
         if not got:
             rows = self.conn.execute("SELECT id, content FROM messages ORDER BY id DESC LIMIT 1000").fetchall()
             ql = query.lower()
             for mid, content in rows:
                 score = sum(1 for tok in ql.split() if tok in content.lower())
                 if score:
-                    prev_score = got[mid][0] if mid in got else 0.0
-                    got[int(mid)] = (max(float(score), prev_score), content)
-        # Rank by score (semantic score first, then recentness for tie-break)
+                    got[int(mid)] = (float(score), content)
         ranked = sorted(got.items(), key=lambda kv: (-kv[1][0], -kv[0]))
         return [(mid, content) for mid, (_s, content) in ranked[:k]]
 
     def list_facts(self, n: int) -> List[Tuple[str, str, float]]:
-        # Return top-n facts by weight
         cur = self.conn.execute("SELECT key, value, weight FROM facts ORDER BY weight DESC LIMIT ?", (n,))
-        facts = cur.fetchall()
+        out = cur.fetchall()
         cur.close()
-        return facts
+        return out
 
     def upsert_fact(self, key: str, value: str, weight_delta: float = 0.0):
-        # Insert or update a fact, adjusting weight
         now = dt.datetime.now(dt.timezone.utc).isoformat()
         cur = self.conn.execute("SELECT key, weight FROM facts WHERE key=?", (key,))
         row = cur.fetchone()
         cur.close()
         if row:
-            new_weight = float(row[1]) + weight_delta
-            self.conn.execute("UPDATE facts SET value=?, weight=?, ts=? WHERE key=?", (value, new_weight, now, key))
+            new_w = float(row[1]) + weight_delta
+            self.conn.execute("UPDATE facts SET value=?, weight=?, ts=? WHERE key=?", (value, new_w, now, key))
         else:
-            base_weight = 1.0 + weight_delta
             self.conn.execute("INSERT OR REPLACE INTO facts(key, value, weight, ts) VALUES (?,?,?,?)",
-                              (key, value, base_weight, now))
+                              (key, value, 1.0 + weight_delta, now))
         self.conn.commit()
 
     def add_reflection(self, text: str, score: float):
@@ -399,22 +381,22 @@ class Memory:
         self.conn.commit()
 
     def get_skill(self, name: str) -> Optional[Tuple[str, str, int, int]]:
-        cur = self.conn.execute("SELECT name, code, approved, usage_count FROM skills WHERE name=?", (name,))
-        row = cur.fetchone()
-        cur.close()
-        return row if row else None
+        row = self.conn.execute("SELECT name, code, approved, usage_count FROM skills WHERE name=?", (name,)).fetchone()
+        return row
 
     def add_skill(self, name: str, code: str, approved: bool = False):
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
-        self.conn.execute("INSERT OR REPLACE INTO skills(name, code, approved, usage_count, created_ts) VALUES (?,?,?,?,?)",
-                          (name, code, 1 if approved else 0, 0, ts))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO skills(name, code, approved, usage_count, created_ts) VALUES (?,?,?,?,?)",
+            (name, code, 1 if approved else 0, 0, ts),
+        )
         self.conn.commit()
 
     def increment_skill_usage(self, name: str):
-        self.conn.execute("UPDATE skills SET usage_count = usage_count + 1 WHERE name=?", (name,))
+        self.conn.execute("UPDATE skills SET usage_count=usage_count+1 WHERE name=?", (name,))
         self.conn.commit()
 
-    def add_reward(self, message_id: int, delta: float, reason: str):
+    def add_reward(self, message_id: Optional[int], delta: float, reason: str):
         if message_id is None:
             return
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -423,7 +405,6 @@ class Memory:
         self.conn.commit()
 
     def shutdown(self):
-        # Signal indexer thread to exit
         with contextlib.suppress(Exception):
             self.index_q.put((None, ""))
         with contextlib.suppress(Exception):
@@ -448,7 +429,7 @@ class Memory:
                     (message_id, self.cfg.embed_model, len(vec), json.dumps(vec), ts),
                 )
                 self.conn.commit()
-                # If using separate vector index, also insert vector there (not shown here)
+                # Hook point: also insert into external vector index here if using one.
             except Exception:
                 traceback.print_exc()
 
@@ -460,6 +441,7 @@ SAFE_MODULES = {
     "random": random,
     "datetime": dt,
 }
+
 def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     if name in SAFE_MODULES:
         return SAFE_MODULES[name]
@@ -472,7 +454,6 @@ class SkillRunner:
     def run(self, name: str, code: str, args: Dict[str, Any]) -> str:
         try:
             if not self.allow_dangerous:
-                # Basic static safety check
                 if re.search(r"\b(os|sys|subprocess|socket|shutil|pathlib|requests|urllib|open|eval|exec|compile|ctypes|multiprocessing)\b", code):
                     return json.dumps({"ok": False, "error": "Skill blocked by safety filter"}, ensure_ascii=False)
                 safe_builtins = {
@@ -485,9 +466,8 @@ class SkillRunner:
             else:
                 env = {"__builtins__": __builtins__, **SAFE_MODULES}
             local_ns: Dict[str, Any] = {}
-            # Compile and execute the skill code
-            compiled = compile(code, "<skill>", "exec")
-            exec(compiled, env, local_ns)
+            compile(code, "<skill>", "exec")
+            exec(code, env, local_ns)
             if "skill_main" not in local_ns:
                 return json.dumps({"ok": False, "error": "Define skill_main(**kwargs)"}, ensure_ascii=False)
             result = local_ns["skill_main"](**(args or {}))
@@ -495,7 +475,7 @@ class SkillRunner:
         except Exception:
             return json.dumps({"ok": False, "error": traceback.format_exc(limit=2)}, ensure_ascii=False)
 
-# ----------------------- TRAINER (optional fine-tuning) -----------------------
+# ----------------------- TRAINER -----------------------
 class Trainer:
     """Background dataset builder + optional LoRA fine-tune."""
     def __init__(self, cfg: Config, mem: Memory):
@@ -552,7 +532,6 @@ class Trainer:
             elif role == "assistant" and last_user is not None:
                 pairs.append((last_user, content))
                 last_user = None
-        # Only keep the last 200 Q&A pairs for fine-tuning dataset
         lines = [json.dumps({"prompt": u, "response": a}, ensure_ascii=False) for u, a in pairs[-200:]]
         if not lines:
             return
@@ -574,11 +553,11 @@ class Trainer:
         try:
             ds = load_dataset("json", data_files=self.ds_path)
             if ds["train"].num_rows < 16:
-                return  # not enough data to fine-tune
+                return
             tok = AutoTokenizer.from_pretrained(base, use_fast=True)
             model = AutoModelForCausalLM.from_pretrained(base)
-            lora_cfg = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
-            model = get_peft_model(model, lora_cfg)
+            lora = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
+            model = get_peft_model(model, lora)
             def fmt(example):
                 x, y = example["prompt"], example["response"]
                 text = f"<s>System: You are Alice.\nUser: {x}\nAssistant: {y}</s>"
@@ -602,7 +581,7 @@ class Trainer:
         except Exception:
             pass
 
-# ----------------------- DARKVISION (Autonomous Self-Improvement) -----------------------
+# ----------------------- DARKVISION -----------------------
 class Darkvision:
     """Autonomous self-improvement loop: dataset snapshot, optional LoRA, propose safe skills."""
     def __init__(self, cfg: Config, llm: LLMClient, mem: Memory, skills: SkillRunner, trainer: Trainer):
@@ -616,7 +595,6 @@ class Darkvision:
         self.thread: Optional[threading.Thread] = None
         self.log_path = os.path.join(self.cfg.train_dir, "darkvision.log")
         os.makedirs(self.cfg.train_dir, exist_ok=True)
-        # Stats
         self.last_cycle_utc: Optional[str] = None
         self.skills_learned: int = 0
         self.last_skill_name: Optional[str] = None
@@ -624,9 +602,8 @@ class Darkvision:
 
     def _log(self, msg: str):
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        line = f"[{ts}] {msg}\n"
         with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write(line)
+            f.write(f"[{ts}] {msg}\n")
 
     def start(self):
         if self.active:
@@ -635,7 +612,6 @@ class Darkvision:
         self.active = True
         self.stop.clear()
         self._prev_train_mode = self.cfg.train_mode
-        # Ensure training mode on for dataset collection
         self.cfg.train_mode = True
         self.trainer.start()
         self.thread = threading.Thread(target=self._loop, daemon=True)
@@ -650,7 +626,6 @@ class Darkvision:
         if self.thread:
             with contextlib.suppress(Exception):
                 self.thread.join(timeout=3)
-        # Restore train_mode to previous state
         if self._prev_train_mode is not None:
             self.cfg.train_mode = self._prev_train_mode
 
@@ -689,35 +664,30 @@ class Darkvision:
         if new_skill:
             name, code = new_skill
             try:
-                # Validate by running a test call if possible
+                # Validate with a quick safe dry-run
                 safe_runner = SkillRunner(allow_dangerous=False)
-                test_result = None
-                if "skill_main" in code:
-                    # attempt a dry-run with no args to catch errors
-                    try:
-                        test_output = safe_runner.run(name, code, {})
-                        result_obj = json.loads(test_output)
-                        if not result_obj.get("ok"):
-                            test_result = f"Test run produced error: {result_obj.get('error')}"
-                        else:
-                            test_result = "ok"
-                    except Exception as e:
-                        test_result = f"Exception during test run: {e}"
-                # Approve skill if test_result is ok, else leave unapproved for review
-                approve = (test_result == "ok") if test_result is not None else True
+                approve = True
+                try:
+                    test_output = safe_runner.run(name, code, {})
+                    result_obj = json.loads(test_output)
+                    if not result_obj.get("ok"):
+                        approve = False
+                        self._log(f"Skill test failed: {name} — {result_obj.get('error')}")
+                except Exception as e:
+                    approve = False
+                    self._log(f"Skill test exception: {name} — {e}")
                 self.mem.add_skill(name, code, approved=approve)
                 if approve:
                     self.skills_learned += 1
                     self.last_skill_name = name
                     self._log(f"Skill learned: {name}")
                 else:
-                    self._log(f"Skill proposed but not auto-approved: {name} ({test_result})")
+                    self._log(f"Skill proposed (not auto-approved): {name}")
             except Exception as e:
                 self._log(f"Failed to register skill {name}: {e}")
         self.last_cycle_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     def _propose_skill(self) -> Optional[Tuple[str, str]]:
-        # Use recent conversation + perhaps recent reflection to inspire skill ideas
         history = self.mem.get_recent_dialogue(30)
         convo = "\n".join(f"{r.upper()}: {c}" for r, c in history)
         prompt = textwrap.dedent(f"""
@@ -725,7 +695,6 @@ class Darkvision:
         - Use ONLY Python stdlib; no OS, no network, no file I/O, no subprocess (safe environment).
         - The skill MUST define:  def skill_main(**kwargs): ...
         - Keep code short and robust. Include a docstring explaining inputs/outputs.
-        - If the conversation suggests a need for an external API or package, propose how to do it with simple methods.
         - Return ONLY a Python code block, nothing else.
 
         Recent conversation:
@@ -737,7 +706,6 @@ class Darkvision:
         <code that defines skill_main(**kwargs)>
         ```
         """).strip()
-        # If we have any high-weight facts or recent reflection, we could include them in the prompt for context (not implemented here to keep prompt concise)
         out = self.llm.complete(prompt, system="You are a careful, truthful skill generator.", max_tokens=800)
         m = re.search(r"```python\s*(?P<code>[\s\S]+?)\s*```", out)
         if not m:
@@ -745,12 +713,12 @@ class Darkvision:
         code = m.group("code").strip()
         name_match = re.search(r"^#\s*skill:\s*([a-zA-Z0-9_]{3,40})", code, re.MULTILINE)
         name = name_match.group(1) if name_match else f"skill_{abs(hash(code)) % 10000}"
-        # Safety check: ensure no disallowed imports in code
+        # Safety gate
         if re.search(r"\b(os|sys|subprocess|socket|shutil|pathlib|requests|urllib|open|eval|exec|compile|ctypes|multiprocessing)\b", code):
             self._log(f"Rejected unsafe skill proposal: {name}")
             return None
         if "def skill_main" not in code:
-            self._log("Rejected skill proposal (no skill_main found)")
+            self._log("Rejected skill proposal (no skill_main)")
             return None
         try:
             compile(code, "<proposal>", "exec")
@@ -776,12 +744,10 @@ class Alice:
         self.mem.upsert_fact("agent.name", "Alice")
         self.mem.upsert_fact("agent.style", "concise-with-dashed-bullets")
         self.last_assistant_id: Optional[int] = None
-        # Darkmode autonomous tools flag
         self.darkmode_enabled = bool(self.cfg.autonomous_tools)
 
-    # ---------- reflection (background summarizer) ----------
+    # ---------- reflection ----------
     def _reflect_loop(self):
-        # Periodically summarize recent conversation and update facts
         while not self.stop_event.wait(self.cfg.reflect_every_sec):
             if self.stop_event.is_set():
                 break
@@ -800,9 +766,7 @@ class Alice:
             + "\n".join([f"{r.upper()}: {c}" for r, c in history])
         )
         out = self.llm.complete(prompt, system="You are a careful, truthful summarizer.", max_tokens=320)
-        # Save full reflection text (could be used for future analysis or context)
         self.mem.add_reflection(out, score=0.0)
-        # Process bullet lines into facts
         for line in out.splitlines():
             if line.strip().startswith("-"):
                 kv = line.strip("- ").strip()
@@ -810,40 +774,33 @@ class Alice:
                     k, v = kv.split(":", 1)
                     key = k.strip().lower()
                     val = v.strip()
-                    # Only update if non-empty
                     if key:
                         self.mem.upsert_fact(key, val, weight_delta=0.2)
 
-    # ---------- prompt composition ----------
+    # ---------- prompting ----------
     def _compose_prompt(self, user_text: str) -> str:
-        # Gather top facts
         facts = self.mem.list_facts(12)
         fact_lines = [f"- {k}: {v} (w={w:.1f})" for k, v, w in facts]
-        # Recent dialogue (limited by max_history)
         recent = self.mem.get_recent_dialogue(self.cfg.max_history)
-        # Semantic recall for similar content
-        recall_hits = self.mem.recall(user_text, self.cfg.recall_k)
-        recall_text = "\n".join([f"• {c[:400]}" for _mid, c in recall_hits])
+        recall = self.mem.recall(user_text, self.cfg.recall_k)
+        recall_text = "\n".join([f"• {c[:400]}" for _mid, c in recall])
         chat_snips = "\n".join([f"{r.upper()}: {c}" for r, c in recent])
         guidance = "Answer succinctly. Use FACTS and RECALL if relevant. Prefer dashed bullets for lists.\n"
-        prompt = (
+        return (
             f"{guidance}\n\nFACTS (top-weighted):\n" + ("\n".join(fact_lines) if fact_lines else "(none)") +
             f"\n\nRECALL (similar topics):\n" + (recall_text or "(none)") +
             f"\n\nRECENT CHAT:\n{chat_snips}\n\nUSER: {user_text}\nASSISTANT:"
         )
-        return prompt
 
     def _system_for_chat(self) -> str:
-        # Include tool instructions in system prompt if autonomous tools (darkmode) is enabled
-        return BASE_PROMPT + (TOOLS_PROMPT if self.darkmode_enabled and self.cfg.web_access else BASE_PROMPT + SAFETY_PROMPT) + SAFETY_PROMPT
-        # Note: If web access is off, we might not want to list the browse tool. Here, Tools prompt is added only if web_access is True.
+        # FIX: always include tool instructions in Darkmode; browse() itself checks web_access
+        return BASE_PROMPT + (TOOLS_PROMPT if self.darkmode_enabled else "") + SAFETY_PROMPT
 
     # ---------- built-in tools ----------
     def _tool_calc(self, args: Dict[str, Any]) -> Dict[str, Any]:
         expr = str(args.get("expr", "")).strip()
         if not expr:
             return {"ok": False, "error": "missing 'expr'"}
-        # safer arithmetic via AST (only math operations)
         try:
             import ast
             class SafeEval(ast.NodeVisitor):
@@ -886,7 +843,6 @@ class Alice:
         return {"ok": True, "facts": [{"key": k, "value": v, "weight": w} for k, v, w in facts]}
 
     def _tool_browse(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        # Fetch content from a URL (if web access is enabled)
         if not self.cfg.web_access:
             return {"ok": False, "error": "web access is disabled"}
         url = str(args.get("url", "")).strip()
@@ -895,20 +851,16 @@ class Alice:
         if not requests:
             return {"ok": False, "error": "requests library not installed"}
         try:
-            # Basic security: only allow http(s)
             if not url.lower().startswith(("http://", "https://")):
                 return {"ok": False, "error": "invalid URL scheme"}
-            # Add a User-Agent to appear as a browser
             headers = {"User-Agent": "AliceBot/0.1"}
             resp = requests.get(url, headers=headers, timeout=10)
             text = resp.text
             if BeautifulSoup:
                 soup = BeautifulSoup(text, "html.parser")
-                # Extract visible text from the page (could be refined)
                 for script in soup(["script", "style"]):
                     script.extract()
                 page_text = soup.get_text(separator="\n")
-                # Return a snippet of the content to avoid overloading
                 snippet = page_text.strip()
                 if len(snippet) > 1000:
                     snippet = snippet[:1000] + "..."
@@ -919,7 +871,6 @@ class Alice:
             return {"ok": False, "error": f"request failed: {e}"}
 
     def _run_tool(self, name: str, args: Dict[str, Any]) -> str:
-        # built-ins first
         builtins = {
             "calc": self._tool_calc,
             "recall": self._tool_recall,
@@ -932,18 +883,14 @@ class Alice:
                 res = builtins[name](args)
             except Exception as e:
                 res = {"ok": False, "error": str(e)}
-            # If this was a user skill invocation, we could increment usage_count, but builtins don't need that.
             return json.dumps(res, ensure_ascii=False)
-        # then user-defined skills
         row = self.mem.get_skill(name)
         if not row:
             return json.dumps({"ok": False, "error": f"no such tool/skill: {name}"}, ensure_ascii=False)
         skill_name, code, approved, usage_count = row
         if not approved and not self.cfg.allow_dangerous_skills:
             return json.dumps({"ok": False, "error": f"skill '{name}' not approved"}, ensure_ascii=False)
-        # Execute the skill
         result_json = self.skills.run(skill_name, code, args)
-        # Update usage count
         self.mem.increment_skill_usage(skill_name)
         return result_json
 
@@ -959,7 +906,7 @@ class Alice:
             args = {}
         return name, args
 
-    # ---------- commands handling ----------
+    # ---------- commands ----------
     def _help_text(self) -> str:
         return textwrap.dedent("""\
         Commands:
@@ -967,7 +914,8 @@ class Alice:
         - /facts                 — list top remembered facts
         - /recall <query>        — search past chat/content
         - /good | /bad           — reward/punish last answer
-        - /teach <name> ```python\n...``` — add a skill (must define skill_main(**kwargs))
+        - /teach <name> ```python
+          ...```                 — add a skill (must define skill_main(**kwargs))
         - /run <name> {json}     — run a built-in tool or approved skill
         - /ingest <path>         — ingest .txt/.md file(s) into memory
         - /train status|now      — snapshot dataset and optional LoRA fine-tune
@@ -991,12 +939,11 @@ class Alice:
             compile(code, "<user-skill>", "exec")
         except Exception as e:
             return f"- Syntax error: {e}"
-        # Auto-approve user-taught skill (assuming user has intention to use it)
         self.mem.add_skill(name, code, approved=True)
         return f"- Skill '{name}' saved and approved. Use /run {name} {{...}} to execute."
 
     def _cmd_run(self, raw: str) -> str:
-        m = re.search(r"/run\s+(?P<name>[A-Za-z0-9_\-]+)\s+(?P<json>{.*})\s*$", raw, re.DOTALL)
+        m = re.search(r"/run\s+(?P<name>[A-Za-z0-9_\-]+)\s+(?P<json>{.*})\s*$", raw, re.IGNORECASE | re.DOTALL)
         if not m:
             return "Usage: /run <name> {json-args}"
         name = m.group("name")
@@ -1004,10 +951,8 @@ class Alice:
             args = json.loads(m.group("json"))
         except json.JSONDecodeError as e:
             return f"- Bad JSON args: {e}"
-        # Allow direct invocation of built-ins
         if name in ("calc", "recall", "set_fact", "get_facts", "browse"):
             return self._run_tool(name, args)
-        # Otherwise, it's a skill
         row = self.mem.get_skill(name)
         if not row:
             return f"- No such skill: {name}"
@@ -1036,7 +981,6 @@ class Alice:
             try:
                 with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                     text = f.read()
-                # Store file content as a system message with [ingested:filename] tag
                 self.mem.add_message("system", f"[ingested:{os.path.basename(fp)}]\n{text}")
                 count += 1
             except Exception as e:
@@ -1113,7 +1057,7 @@ class Alice:
         if sub == "list":
             models = self.llm.list_models()
             if not models:
-                return "- no models found (is Ollama running and models pulled?)"
+                return "- no models found (is ollama running and models pulled?)"
             return "- Installed models:\n" + "\n".join(f"- {m}" for m in models)
         if sub == "info":
             info = self.llm.show_model() or {}
@@ -1129,7 +1073,6 @@ class Alice:
             tag = " ".join(parts[2:]).strip()
             old = self.cfg.model
             self.cfg.model = tag
-            # Probe new model's context length if available
             info = self.llm.show_model(tag) or {}
             det = info.get("details", {})
             ctx_len = det.get("context_length")
@@ -1153,7 +1096,6 @@ class Alice:
             name = " ".join(parts[2:]).strip()
             old = self.cfg.embed_model
             self.cfg.embed_model = name
-            # quick probe to verify availability
             probe = self.llm.embed("test 123")
             ok = "ok" if probe else "not-ready"
             return f"- embed model: {old} → {name} ({ok})"
@@ -1179,7 +1121,6 @@ class Alice:
         pkg = parts[1].strip()
         if not pkg:
             return "Usage: /install <package_name>"
-        # Only proceed if pip is available
         try:
             import subprocess
             result = subprocess.run([sys.executable, "-m", "pip", "install", pkg], capture_output=True, text=True)
@@ -1191,9 +1132,8 @@ class Alice:
         except Exception as e:
             return f"- Error running pip: {e}"
 
-    # ---------- main user entry ----------
+    # ---------- main chat ----------
     def handle_user(self, user_text: str) -> str:
-        # Slash commands take precedence
         if user_text.startswith("/help"):
             return self._help_text()
         if user_text.startswith("/facts"):
@@ -1230,7 +1170,6 @@ class Alice:
         if user_text.startswith("/install"):
             return self._cmd_install(user_text)
 
-        # Echo helper (say "...", etc.)
         _t = user_text.strip()
         if _t.lower().startswith('say') or _t.lower().startswith('/say'):
             parts = _t.split(' ', 1)
@@ -1240,20 +1179,17 @@ class Alice:
                     echo = echo[1:-1]
                 return echo
 
-        # Normal chat flow
         self.mem.add_message("user", user_text)
         prompt = self._compose_prompt(user_text)
         system = self._system_for_chat()
 
-        # Generate initial response
         resp = self.llm.complete(prompt, system=system, max_tokens=700)
 
-        # Autonomous tool use loop if darkmode is on
         if self.darkmode_enabled:
             steps = 0
             while True:
                 call = self._maybe_tool_call(resp)
-                if not call or steps >= 5:  # allow up to 5 tool uses in a single turn
+                if not call or steps >= 5:
                     break
                 steps += 1
                 name, args = call
@@ -1265,12 +1201,11 @@ class Alice:
                 )
                 resp = self.llm.complete(follow, system=system, max_tokens=700)
 
-        # Strip out any internal 'Thought:' lines from the final LLM output
         final = "\n".join(ln for ln in resp.splitlines() if not THOUGHT_RE.match(ln)).strip()
         self.last_assistant_id = self.mem.add_message("assistant", final)
         return final
 
-    # ---------- lifecycle cleanup ----------
+    # ---------- lifecycle ----------
     def shutdown(self):
         self.stop_event.set()
         with contextlib.suppress(Exception):
@@ -1279,7 +1214,7 @@ class Alice:
         self.trainer.shutdown()
         self.mem.shutdown()
 
-# ----------------------- CLI ENTRY POINT -----------------------
+# ----------------------- CLI -----------------------
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Alice 0.1.2 — enhanced, continuously-learning local AI")
     ap.add_argument("--db", default="alice.db")
@@ -1318,7 +1253,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         train_interval_sec=args.train_interval,
         darkvision_interval_sec=args.darkvision_interval,
         autonomous_tools=args.autonomous_tools,
-        web_access=args.enable-web
+        web_access=args.enable_web  # FIX: argparse uses underscore attr
     )
     alice = Alice(cfg)
 
@@ -1342,4 +1277,4 @@ def main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
