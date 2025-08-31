@@ -1452,7 +1452,7 @@ class Alice:
                 checks.append("- Metasploit RPC client (pymetasploit3): MISSING (pip install pymetasploit3)")
             return "Pentest doctor:\n" + "\n".join(checks)
         return "Usage: /pentest on|off|status|allow <target>|revoke <target>|list|doctor"
-def _cmd_weather(self, raw: str) -> str:
+    def _cmd_weather(self, raw: str) -> str:
         """
         /weather <lat,lon> [hourly]
         """
@@ -1467,8 +1467,9 @@ def _cmd_weather(self, raw: str) -> str:
         loc = result.get("location", f"{lat:.4f},{lon:.4f}")
         lines = [f"- location: {loc}", f"- mode: {'hourly' if hourly else 'periods'}"]
         for p in result.get("periods", []):
-            lines.append(f"- {p.get('name')}: {p.get('shortForecast')} — {p.get('temperature')}{p.get('unit','')} | wind {p.get('wind')}")
+            lines.append(f"- {p.get('name')}: {p.get('shortForecast')} | {p.get('temperature')}{p.get('unit','')} | wind {p.get('wind')}")
         return "\n".join(lines) if lines else "- (no forecast data)"
+
 
     # ---------- main chat ----------
     def handle_user(self, user_text: str) -> str:
