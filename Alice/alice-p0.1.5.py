@@ -36,6 +36,48 @@ import traceback
 import shutil
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# ----------------------- UI: BAR SPINNER -----------------------
+class _BarSpinner:
+    """Lightweight CLI bar spinner for long-running steps."""
+    def __init__(self, label: str = "working", width: int = 12, interval: float = 0.08):
+        self.label = label
+        self.width = max(6, int(width))
+        self.interval = max(0.03, float(interval))
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+
+    def _frame(self, i: int) -> str:
+        span = self.width * 2 - 2
+        pos = (i % span)
+        if pos >= self.width:
+            pos = span - pos
+        cells = [" "] * self.width
+        cells[pos] = "="
+        return "[" + "".join(cells) + "]"
+
+    def _run(self):
+        i = 0
+        prefix = f"{self.label} " if self.label else ""
+        try:
+            while not self._stop.is_set():
+                sys.stdout.write("\r" + prefix + self._frame(i))
+                sys.stdout.flush()
+                time.sleep(self.interval)
+                i += 1
+        finally:
+            sys.stdout.write("\r" + " " * (len(prefix) + self.width + 2) + "\r")
+            sys.stdout.flush()
+
+    def start(self):
+        self._t.start()
+
+    def stop(self):
+        self._stop.set()
+        self._t.join(timeout=1.0)
+        sys.stdout.write("\r")
+        sys.stdout.flush()
+
+
 # Optional deps for web browsing / NOAA
 try:
     import requests  # for web fetching and external API calls
