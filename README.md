@@ -1,5 +1,8 @@
 # Alice — A Continuously‑Learning Local Agent
 ![alice-in-wonderland-gif-2](https://github.com/user-attachments/assets/d29695db-77d6-4242-a19c-f302b900b5d8)
+# Made in America
+![Animated-Flag-USA](https://github.com/user-attachments/assets/bfa1ede1-7f3c-456a-8b00-9964158f3c4f)
+ 
 
 
 ## Why Alice
