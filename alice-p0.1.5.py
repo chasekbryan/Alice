@@ -1609,7 +1609,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    print("Alice p0.1.4 is awake. Type /help for commands. (Ctrl+C to exit.)\n")
+    print("Alice p0.1.5 is awake. Type /help for commands. (Ctrl+C to exit.)\n")
     while True:
         try:
             user = input("You> ").strip()
