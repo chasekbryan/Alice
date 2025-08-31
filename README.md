@@ -299,6 +299,7 @@ Alice can assist with network, web application, and wireless security assessment
 - evidence‑first workflows and clear confirmations for risky actions
 
 ---
+<img width="1024" height="1024" alt="alice-ghidra" src="https://github.com/user-attachments/assets/42b80835-4810-4934-bcb5-07455f7c3c5b" />
 
 ## License
 - GPL‑3.0
