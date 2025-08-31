@@ -99,16 +99,13 @@ Local, continuously‑learning AI with autonomous tools, skills sandbox, and mod
   - `--autonomous-tools` — start with Darkmode enabled
   - `--allow-dangerous-skills` — lift the skill sandbox restrictions (not recommended)
 
-## Weather function
+## NOAA Weather function 0.1.3
 
-- ```
-  /web on
-  /install requests
-  /install beautifulsoup4
-  ```
-- ```
-  /weather 00.0000,-00.0000
-  ```
+- `/web on` 
+- `/install requests` 
+- `/install beautifulsoup4`
+
+- `/weather 00.0000,-00.0000`
 
 ## Data layout
 
