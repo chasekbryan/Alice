@@ -1,6 +1,6 @@
 # Alice — A Continuously‑Learning Local Agent
 
-# Alice has gone underground ☠️
+## Alice has gone underground ☠️
 ![ts-alice](https://github.com/user-attachments/assets/86a2de3b-3cab-4cab-b7fa-5584e769fe22)
 
 
