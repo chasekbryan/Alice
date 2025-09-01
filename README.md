@@ -1,5 +1,8 @@
 # Alice — A Continuously‑Learning Local Agent
-![alice-in-wonderland-gif-2](https://github.com/user-attachments/assets/d29695db-77d6-4242-a19c-f302b900b5d8)
+
+# Alice has gone underground ☠️
+![ts-alice](https://github.com/user-attachments/assets/86a2de3b-3cab-4cab-b7fa-5584e769fe22)
+
 
 --- 
 
