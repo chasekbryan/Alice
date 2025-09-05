@@ -46,6 +46,14 @@
   - `/darkmode on` to allow autonomous tool calls
   - `/model list` to see installed models
 
+### Run Alice (Rust)
+- compilation
+  - `cargo build --release`
+- launch
+  - `./target/release/alice_gp_rs --model llama3.2:3b`
+- launch w/ flags example
+  - `./target/release/alice_gp_rs --model gpt-oss:20b --web-access --autonomous-tools`
+
 ---
 
 ## Core Concepts
