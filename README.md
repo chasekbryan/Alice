@@ -1,8 +1,7 @@
 # Alice — A Continuously‑Learning Local Agent
 
-## Alice has gone underground ☠️
-![ts-alice](https://github.com/user-attachments/assets/86a2de3b-3cab-4cab-b7fa-5584e769fe22)
-
+## Alice has been resurrected! ☠️
+![alice-res](https://github.com/user-attachments/assets/05ce7fbb-4e84-4778-a032-890e12c4ed08)
 
 --- 
 
@@ -310,6 +309,10 @@ Alice can assist with network, web application, and wireless security assessment
 
 ## Acknowledgments
 - born to be a sturdy, private, always‑learning lab companion
+
+- ## HUGE THANKS TO @xai
+<img width="512" height="363" alt="XAI_Logo svg" src="https://github.com/user-attachments/assets/c7cc3f52-551a-4de6-8446-f9f306e40e18" />
+
 
 ## Made in the USA
 ![Animated-Flag-USA](https://github.com/user-attachments/assets/bfa1ede1-7f3c-456a-8b00-9964158f3c4f)
