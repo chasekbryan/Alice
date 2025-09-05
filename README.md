@@ -311,7 +311,8 @@ Alice can assist with network, web application, and wireless security assessment
 - born to be a sturdy, private, always‑learning lab companion
 
 - ## HUGE THANKS TO @xai
-<img width="512" height="363" alt="XAI_Logo svg" src="https://github.com/user-attachments/assets/c7cc3f52-551a-4de6-8446-f9f306e40e18" />
+![xai](https://github.com/user-attachments/assets/5e31fd67-178d-417e-914f-e3b353773e74)
+
 
 
 ## Made in the USA
