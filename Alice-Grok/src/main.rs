@@ -214,7 +214,7 @@ impl Memory {
 
     fn add_message(&self, role: &str, content: &str) -> Result<i64> {
         let ts = Self::now_iso();
-        let mut conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO messages(role, content, ts) VALUES (?,?,?)",
             params![role, content, ts],
@@ -700,7 +700,7 @@ impl Alice {
                     [name],
                     |row| row.get(0)
                 ).optional()?;
-                if let Some(code) = code {
+                if let Some(_code) = code {
                     // Sandbox execution; stub for v0.2.0 (use rustpython-vm in future)
                     Ok(json!({"ok": false, "error": "skill execution stubbed"}).to_string())
                 } else {
